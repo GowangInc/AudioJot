@@ -13,7 +13,7 @@
         <h1>AudioJot</h1>
         <button id="btn-new-session">+ New Session</button>
       </div>
-      <div id="session-list"></div>
+      <div id="session-list" tabindex="0"></div>
       <div id="audio-panel">
         <h3>Audio</h3>
         <div id="timer">00:00:00</div>
@@ -24,10 +24,10 @@
         </div>
         <audio id="audio-player" controls hidden></audio>
         <input type="file" id="audio-upload" accept="audio/*" hidden />
-        <button id="btn-upload" style="margin-top:8px;width:100%;">Upload Audio</button>
-        <button id="btn-transcribe" style="margin-top:8px;width:100%;" disabled>Transcribe</button>
-        <button id="btn-import" style="margin-top:8px;width:100%;" disabled>Import Transcript</button>
-        <div id="status-msg" style="margin-top:8px;font-size:12px;color:#8e8e93;text-align:center;min-height:18px;"></div>
+        <button id="btn-upload">Upload Audio</button>
+        <button id="btn-transcribe" disabled>Transcribe</button>
+        <button id="btn-import" disabled>Import Transcript</button>
+        <div id="status-msg"></div>
       </div>
     </aside>
 
@@ -35,20 +35,22 @@
       <div id="main-header">
         <input id="session-title" type="text" placeholder="Session title..." disabled />
         <div class="actions">
-          <button id="btn-export-md" disabled>Export Markdown</button>
+          <button id="btn-view-notes" class="active">Notes</button>
+          <button id="btn-view-doc" hidden>Document</button>
+          <button id="btn-export-md" disabled>Export</button>
         </div>
       </div>
-      <div id="editor">
-        <div class="empty-state">
-          <h2>No session selected</h2>
-          <p>Create a new session or select one from the sidebar.</p>
-        </div>
-      </div>
-      <div id="note-input-area" hidden>
-        <input id="note-input" type="text" placeholder="Type a note and press Enter..." />
-        <button id="btn-add-note">Add Note</button>
+      <div id="editor-container">
+        <textarea id="editor" placeholder="Select or create a session to start taking notes..." disabled></textarea>
+        <div id="document-view" hidden></div>
       </div>
     </main>
+  </div>
+
+  <div id="context-menu" hidden>
+    <div class="ctx-item" data-action="rename">Rename</div>
+    <div class="ctx-item" data-action="delete">Delete</div>
+    <div class="ctx-item" data-action="export">Export Markdown</div>
   </div>
 
   <script src="/static/app.js"></script>

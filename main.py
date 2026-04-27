@@ -4,8 +4,21 @@ AudioJot entry point.
 Starts FastAPI in a background thread, then opens a pywebview window.
 """
 
+import sys
 import threading
 import time
+
+# Set macOS menu bar name before anything else loads
+if sys.platform == "darwin":
+    try:
+        from Foundation import NSBundle
+        bundle = NSBundle.mainBundle()
+        info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+        info["CFBundleName"] = "AudioJot"
+        info["CFBundleDisplayName"] = "AudioJot"
+    except ImportError:
+        pass
+
 import webview
 import uvicorn
 

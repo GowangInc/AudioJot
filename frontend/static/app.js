@@ -1,13 +1,17 @@
 // ─── AudioJot Frontend ──────────────────────────────────────
 
 const API_BASE = '';
+
+// State
 let currentSessionId = null;
-let mediaRecorder = null;
-let recordedChunks = [];
+let sessions = [];
+let selectedSessionIdx = -1;
+let isRecording = false;
 let recordingStartTime = 0;
 let recordingTimerInterval = null;
-let audioBlob = null;
-let isRecording = false;
+let mediaRecorder = null;
+let viewMode = 'notes'; // 'notes' | 'document'
+let ctxSessionId = null;
 
 // ─── DOM refs ───────────────────────────────────────────────
 
@@ -26,10 +30,11 @@ const els = {
   audioPlayer: document.getElementById('audio-player'),
   sessionTitle: document.getElementById('session-title'),
   editor: document.getElementById('editor'),
-  noteInputArea: document.getElementById('note-input-area'),
-  noteInput: document.getElementById('note-input'),
-  btnAddNote: document.getElementById('btn-add-note'),
+  documentView: document.getElementById('document-view'),
+  btnViewNotes: document.getElementById('btn-view-notes'),
+  btnViewDoc: document.getElementById('btn-view-doc'),
   btnExportMd: document.getElementById('btn-export-md'),
+  contextMenu: document.getElementById('context-menu'),
 };
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -50,9 +55,9 @@ function fmtTimeShort(seconds) {
   return `${m}:${s}`;
 }
 
-function setStatus(msg, isError = false) {
+function setStatus(msg, type = '') {
   els.statusMsg.textContent = msg;
-  els.statusMsg.style.color = isError ? '#c62828' : '#8e8e93';
+  els.statusMsg.className = type;
 }
 
 async function api(method, path, body) {
@@ -71,26 +76,9 @@ async function api(method, path, body) {
     }
     return res.status === 204 ? null : res.json();
   } catch (e) {
-    setStatus(`Error: ${e.message || e}`, true);
+    setStatus(`Error: ${e.message || e}`, 'error');
     throw e;
   }
-}
-
-// ─── Session List ───────────────────────────────────────────
-
-async function loadSessions() {
-  const sessions = await api('GET', '/sessions');
-  els.sessionList.innerHTML = '';
-  sessions.forEach(s => {
-    const item = document.createElement('div');
-    item.className = `session-item ${s.id === currentSessionId ? 'active' : ''}`;
-    item.innerHTML = `
-      <span class="session-title">${escapeHtml(s.title)}</span>
-      <span class="session-status status-badge status-${s.status}">${s.status}</span>
-    `;
-    item.onclick = () => selectSession(s.id);
-    els.sessionList.appendChild(item);
-  });
 }
 
 function escapeHtml(text) {
@@ -99,22 +87,133 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-// ─── Select / Load Session ──────────────────────────────────
+// ─── Session List ───────────────────────────────────────────
+
+async function loadSessions() {
+  sessions = await api('GET', '/sessions');
+  renderSessionList();
+}
+
+function renderSessionList() {
+  els.sessionList.innerHTML = '';
+  sessions.forEach((s, idx) => {
+    const item = document.createElement('div');
+    item.className = `session-item ${s.id === currentSessionId ? 'active' : ''}`;
+    item.dataset.id = s.id;
+    item.dataset.idx = idx;
+    item.tabIndex = -1;
+    item.innerHTML = `
+      <span class="session-title">${escapeHtml(s.title)}</span>
+      <span class="session-status status-badge status-${s.status}">${s.status}</span>
+    `;
+    item.onclick = () => selectSession(s.id);
+    item.oncontextmenu = (e) => showContextMenu(e, s.id);
+    els.sessionList.appendChild(item);
+  });
+
+  // Restore selection highlight
+  if (selectedSessionIdx >= 0 && selectedSessionIdx < sessions.length) {
+    const items = els.sessionList.querySelectorAll('.session-item');
+    if (items[selectedSessionIdx]) items[selectedSessionIdx].classList.add('active');
+  }
+}
+
+// ─── Context Menu ───────────────────────────────────────────
+
+function showContextMenu(e, sessionId) {
+  e.preventDefault();
+  ctxSessionId = sessionId;
+  const menu = els.contextMenu;
+  menu.hidden = false;
+  menu.style.left = `${e.clientX}px`;
+  menu.style.top = `${e.clientY}px`;
+}
+
+function hideContextMenu() {
+  els.contextMenu.hidden = true;
+  ctxSessionId = null;
+}
+
+els.contextMenu.querySelectorAll('.ctx-item').forEach(el => {
+  el.onclick = async () => {
+    const action = el.dataset.action;
+    const sid = ctxSessionId;
+    hideContextMenu();
+    if (!sid) return;
+
+    if (action === 'delete') {
+      if (!confirm('Delete this session?')) return;
+      await api('DELETE', `/sessions/${sid}`);
+      if (currentSessionId === sid) {
+        currentSessionId = null;
+        selectedSessionIdx = -1;
+        resetMain();
+      }
+      await loadSessions();
+    } else if (action === 'rename') {
+      const session = sessions.find(s => s.id === sid);
+      const newTitle = prompt('New title:', session?.title || '');
+      if (newTitle) {
+        await api('PATCH', `/sessions/${sid}`, { title: newTitle });
+        await loadSessions();
+      }
+    } else if (action === 'export') {
+      await exportSessionMarkdown(sid);
+    }
+  };
+});
+
+document.addEventListener('click', (e) => {
+  if (!els.contextMenu.contains(e.target)) hideContextMenu();
+});
+
+// ─── Arrow Key Navigation ───────────────────────────────────
+
+els.sessionList.addEventListener('keydown', (e) => {
+  if (sessions.length === 0) return;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    selectedSessionIdx = Math.min(selectedSessionIdx + 1, sessions.length - 1);
+    selectSessionByIndex(selectedSessionIdx);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    selectedSessionIdx = Math.max(selectedSessionIdx - 1, 0);
+    selectSessionByIndex(selectedSessionIdx);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (selectedSessionIdx >= 0) {
+      selectSession(sessions[selectedSessionIdx].id);
+    }
+  }
+});
+
+function selectSessionByIndex(idx) {
+  const items = els.sessionList.querySelectorAll('.session-item');
+  items.forEach((item, i) => {
+    item.classList.toggle('active', i === idx);
+    if (i === idx) item.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+// ─── Select Session ─────────────────────────────────────────
 
 async function selectSession(id) {
+  if (!id) return;
   currentSessionId = id;
+  selectedSessionIdx = sessions.findIndex(s => s.id === id);
   setStatus('');
-  await loadSessions();
+  renderSessionList();
 
   const session = await api('GET', `/sessions/${id}`);
   els.sessionTitle.value = session.title;
   els.sessionTitle.disabled = false;
 
-  // Audio controls state
+  // Audio state
   const hasAudio = !!session.audio_file_path;
   els.btnPlay.disabled = !hasAudio;
   els.btnTranscribe.disabled = !hasAudio || session.status === 'transcribing';
-  els.btnImport.disabled = !hasAudio;
+  els.btnImport.disabled = false;
   els.btnExportMd.disabled = false;
 
   if (hasAudio) {
@@ -125,46 +224,85 @@ async function selectSession(id) {
     els.audioPlayer.src = '';
   }
 
-  // Note input visible when a session is selected
-  els.noteInputArea.hidden = false;
-  els.noteInput.placeholder = isRecording ? 'Type a note (timestamped to recording)...' : 'Type a note and press Enter...';
+  // Enable editor
+  els.editor.disabled = false;
+  els.editor.placeholder = isRecording
+    ? 'Type your notes here. Press Enter to timestamp a line...'
+    : 'Type your notes here...';
 
-  // Load aligned view or notes
-  await loadEditor();
+  // Load notes into textarea
+  const notes = await api('GET', `/sessions/${id}/notes`);
+  els.editor.value = notes.map(n => n.text).join('\n\n');
 
-  // Check transcription status if transcribing
+  // Show document view button if transcript exists
+  const hasTranscript = session.status === 'transcribed' || session.status === 'imported';
+  els.btnViewDoc.hidden = !hasTranscript;
+
+  if (hasTranscript && viewMode === 'document') {
+    await showDocumentView();
+  } else {
+    showNotesView();
+  }
+
   if (session.status === 'transcribing') {
     pollTranscriptionStatus();
-  } else {
-    els.transcribeStatus.textContent = '';
   }
 }
 
-async function loadEditor() {
-  if (!currentSessionId) {
-    els.editor.innerHTML = `
-      <div class="empty-state">
-        <h2>No session selected</h2>
-        <p>Create a new session or select one from the sidebar.</p>
-      </div>
-    `;
-    return;
-  }
-
-  try {
-    const aligned = await api('GET', `/sessions/${currentSessionId}/aligned`);
-    renderAligned(aligned.items);
-  } catch (e) {
-    // If no transcript yet, just show notes
-    const notes = await api('GET', `/sessions/${currentSessionId}/notes`);
-    renderNotesOnly(notes);
-  }
+function resetMain() {
+  els.sessionTitle.value = '';
+  els.sessionTitle.disabled = true;
+  els.editor.value = '';
+  els.editor.disabled = true;
+  els.editor.placeholder = 'Select or create a session to start taking notes...';
+  els.documentView.innerHTML = '';
+  els.documentView.hidden = true;
+  els.editor.hidden = false;
+  els.btnViewDoc.hidden = true;
+  els.btnViewNotes.classList.add('active');
+  els.btnViewDoc.classList.remove('active');
+  els.btnPlay.disabled = true;
+  els.btnTranscribe.disabled = true;
+  els.btnImport.disabled = true;
+  els.btnExportMd.disabled = true;
+  els.audioPlayer.hidden = true;
+  els.audioPlayer.src = '';
+  viewMode = 'notes';
 }
 
-function renderAligned(items) {
-  els.editor.innerHTML = '';
+// ─── View Toggle ────────────────────────────────────────────
+
+els.btnViewNotes.onclick = () => {
+  viewMode = 'notes';
+  els.btnViewNotes.classList.add('active');
+  els.btnViewDoc.classList.remove('active');
+  showNotesView();
+};
+
+els.btnViewDoc.onclick = async () => {
+  viewMode = 'document';
+  els.btnViewDoc.classList.add('active');
+  els.btnViewNotes.classList.remove('active');
+  await showDocumentView();
+};
+
+function showNotesView() {
+  els.editor.hidden = false;
+  els.documentView.hidden = true;
+}
+
+async function showDocumentView() {
+  if (!currentSessionId) return;
+  const aligned = await api('GET', `/sessions/${currentSessionId}/aligned`);
+  els.editor.hidden = true;
+  els.documentView.hidden = false;
+  renderDocument(aligned.items);
+}
+
+function renderDocument(items) {
+  els.documentView.innerHTML = '';
   if (!items || items.length === 0) {
-    els.editor.innerHTML = '<div class="empty-state"><p>No transcript or notes yet.</p></div>';
+    els.documentView.innerHTML = '<div class="empty-state"><p>No content yet.</p></div>';
     return;
   }
   items.forEach(item => {
@@ -182,25 +320,7 @@ function renderAligned(items) {
         <div>${escapeHtml(item.data.text)}</div>
       `;
     }
-    els.editor.appendChild(div);
-  });
-}
-
-function renderNotesOnly(notes) {
-  els.editor.innerHTML = '';
-  if (!notes || notes.length === 0) {
-    els.editor.innerHTML = '<div class="empty-state"><p>No notes yet. Start recording or upload audio.</p></div>';
-    return;
-  }
-  notes.forEach(note => {
-    const div = document.createElement('div');
-    div.className = 'document-item note';
-    div.innerHTML = `
-      <div class="label">Note</div>
-      <div class="timestamp">[${fmtTimeShort(note.audio_offset_ms / 1000)}]</div>
-      <div>${escapeHtml(note.text)}</div>
-    `;
-    els.editor.appendChild(div);
+    els.documentView.appendChild(div);
   });
 }
 
@@ -208,7 +328,9 @@ function renderNotesOnly(notes) {
 
 els.btnNewSession.onclick = async () => {
   const session = await api('POST', '/sessions', { title: null });
+  await loadSessions();
   await selectSession(session.id);
+  els.editor.focus();
 };
 
 // ─── Title editing ──────────────────────────────────────────
@@ -219,46 +341,67 @@ els.sessionTitle.onchange = async () => {
   await loadSessions();
 };
 
+// ─── Textarea: Note Capture & Sync ──────────────────────────
+
+els.editor.addEventListener('keydown', async (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && isRecording && currentSessionId) {
+    // Get the line that was just completed (text before cursor)
+    const text = els.editor.value;
+    const cursorPos = els.editor.selectionStart;
+    const beforeCursor = text.substring(0, cursorPos);
+    const lines = beforeCursor.split('\n\n');
+    const currentLine = lines[lines.length - 1].trim();
+
+    if (currentLine) {
+      const offsetMs = Date.now() - recordingStartTime;
+      try {
+        await api('POST', `/sessions/${currentSessionId}/notes`, {
+          text: currentLine,
+          audio_offset_ms: offsetMs,
+        });
+        setStatus(`Note saved at ${fmtTimeShort(offsetMs / 1000)}`, 'success');
+      } catch (err) {
+        // error already shown by api()
+      }
+    }
+  }
+});
+
+// Sync textarea to notes on blur
+els.editor.addEventListener('blur', async () => {
+  if (!currentSessionId || isRecording) return;
+  await syncNotesFromTextarea();
+});
+
+async function syncNotesFromTextarea() {
+  const text = els.editor.value.trim();
+  const paragraphs = text ? text.split(/\n\n+/) : [];
+
+  // Get existing notes
+  const existing = await api('GET', `/sessions/${currentSessionId}/notes`);
+
+  // Delete all existing notes
+  for (const note of existing) {
+    await api('DELETE', `/notes/${note.id}`);
+  }
+
+  // Recreate from paragraphs (preserve timestamps where possible)
+  for (let i = 0; i < paragraphs.length; i++) {
+    const p = paragraphs[i].trim();
+    if (!p) continue;
+    const timestamp = existing[i] ? existing[i].audio_offset_ms : 0;
+    await api('POST', `/sessions/${currentSessionId}/notes`, {
+      text: p,
+      audio_offset_ms: timestamp,
+    });
+  }
+}
+
 // ─── Recording ──────────────────────────────────────────────
-// Primary: Python backend recorder (works in pywebview desktop)
-// Fallback: Browser MediaRecorder (for development in real browsers)
-
-async function startBrowserRecording() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  mediaRecorder = new MediaRecorder(stream);
-  recordedChunks = [];
-
-  mediaRecorder.ondataavailable = e => {
-    if (e.data.size > 0) recordedChunks.push(e.data);
-  };
-
-  mediaRecorder.onstop = async () => {
-    audioBlob = new Blob(recordedChunks, { type: 'audio/webm' });
-    const formData = new FormData();
-    formData.append('file', audioBlob, 'audio.webm');
-    await api('POST', `/sessions/${currentSessionId}/audio/upload`, formData);
-    await finishRecording();
-  };
-
-  mediaRecorder.onerror = () => {
-    alert('Recording error occurred');
-    finishRecording();
-  };
-
-  mediaRecorder.start();
-}
-
-async function finishRecording() {
-  stopTimer();
-  els.btnRecord.disabled = false;
-  els.btnStop.disabled = true;
-  isRecording = false;
-  await selectSession(currentSessionId);
-}
 
 els.btnRecord.onclick = async () => {
   if (!currentSessionId) {
-    setStatus('Select or create a session first', true);
+    setStatus('Select or create a session first', 'error');
     return;
   }
   setStatus('Starting recording...');
@@ -271,10 +414,11 @@ els.btnRecord.onclick = async () => {
     els.btnRecord.disabled = true;
     els.btnStop.disabled = false;
     els.btnPlay.disabled = true;
+    els.editor.placeholder = 'Type your notes here. Press Enter to timestamp a line...';
     setStatus('Recording...');
     await loadSessions();
   } catch (err) {
-    setStatus('Backend recorder failed, trying browser...', true);
+    setStatus('Backend recorder failed, trying browser...', 'error');
     try {
       await startBrowserRecording();
       isRecording = true;
@@ -283,9 +427,10 @@ els.btnRecord.onclick = async () => {
       els.btnRecord.disabled = true;
       els.btnStop.disabled = false;
       els.btnPlay.disabled = true;
+      els.editor.placeholder = 'Type your notes here. Press Enter to timestamp a line...';
       setStatus('Recording (browser mode)...');
     } catch (browserErr) {
-      setStatus('Could not start recording: ' + (browserErr.message || browserErr), true);
+      setStatus('Could not start recording: ' + (browserErr.message || browserErr), 'error');
     }
   }
 };
@@ -302,11 +447,45 @@ els.btnStop.onclick = async () => {
       await finishRecording();
       setStatus('Recording saved');
     } catch (err) {
-      setStatus('Failed to stop: ' + (err.message || err), true);
+      setStatus('Failed to stop: ' + (err.message || err), 'error');
       finishRecording();
     }
   }
 };
+
+async function startBrowserRecording() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  mediaRecorder = new MediaRecorder(stream);
+  const chunks = [];
+
+  mediaRecorder.ondataavailable = e => {
+    if (e.data.size > 0) chunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = async () => {
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    const formData = new FormData();
+    formData.append('file', blob, 'audio.webm');
+    await api('POST', `/sessions/${currentSessionId}/audio/upload`, formData);
+    await finishRecording();
+  };
+
+  mediaRecorder.onerror = () => {
+    setStatus('Recording error occurred', 'error');
+    finishRecording();
+  };
+
+  mediaRecorder.start();
+}
+
+async function finishRecording() {
+  stopTimer();
+  els.btnRecord.disabled = false;
+  els.btnStop.disabled = true;
+  isRecording = false;
+  els.editor.placeholder = 'Type your notes here...';
+  await selectSession(currentSessionId);
+}
 
 function startTimer() {
   els.timer.textContent = '00:00:00';
@@ -351,44 +530,6 @@ els.audioUpload.onchange = async () => {
   await selectSession(currentSessionId);
 };
 
-// ─── Notes ──────────────────────────────────────────────────
-
-async function addNote() {
-  const text = els.noteInput.value.trim();
-  if (!text || !currentSessionId) return;
-
-  let offsetMs = 0;
-  let modeLabel = '';
-  if (isRecording) {
-    offsetMs = Date.now() - recordingStartTime;
-    modeLabel = 'live';
-  } else if (!els.audioPlayer.paused && els.audioPlayer.currentTime > 0) {
-    offsetMs = Math.floor(els.audioPlayer.currentTime * 1000);
-    modeLabel = 'playback';
-  } else {
-    offsetMs = 0;
-    modeLabel = 'manual';
-  }
-
-  await api('POST', `/sessions/${currentSessionId}/notes`, {
-    text,
-    audio_offset_ms: offsetMs,
-  });
-  els.noteInput.value = '';
-  if (modeLabel) {
-    setStatus(`Note added (${modeLabel} at ${fmtTimeShort(offsetMs / 1000)})`);
-  }
-  await loadEditor();
-}
-
-els.btnAddNote.onclick = addNote;
-els.noteInput.onkeydown = e => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    addNote();
-  }
-};
-
 // ─── Transcription ──────────────────────────────────────────
 
 els.btnTranscribe.onclick = async () => {
@@ -408,12 +549,12 @@ function pollTranscriptionStatus() {
       const status = await api('GET', `/sessions/${currentSessionId}/transcribe-status`);
       if (status.status === 'done') {
         clearInterval(interval);
-        setStatus('Transcription complete');
+        setStatus('Transcription complete', 'success');
         els.btnTranscribe.disabled = false;
         await selectSession(currentSessionId);
       } else if (status.status === 'error') {
         clearInterval(interval);
-        setStatus('Transcription error: ' + (status.error || 'unknown'), true);
+        setStatus('Transcription error: ' + (status.error || 'unknown'), 'error');
         els.btnTranscribe.disabled = false;
       } else if (status.status === 'transcribing') {
         const pct = Math.round((status.progress || 0) * 100);
@@ -421,7 +562,7 @@ function pollTranscriptionStatus() {
       }
     } catch (e) {
       clearInterval(interval);
-      setStatus('Failed to check status', true);
+      setStatus('Failed to check status', 'error');
       els.btnTranscribe.disabled = false;
     }
   }, 2000);
@@ -449,23 +590,39 @@ els.btnImport.onclick = async () => {
 
 els.btnExportMd.onclick = async () => {
   if (!currentSessionId) return;
-  const aligned = await api('GET', `/sessions/${currentSessionId}/aligned`);
-  let md = `# ${els.sessionTitle.value}\n\n`;
-  aligned.items.forEach(item => {
-    if (item.type === 'segment') {
-      md += `[${fmtTimeShort(item.data.start_time)}] ${item.data.text}\n\n`;
-    } else {
-      md += `> **Note** [${fmtTimeShort(item.data.audio_offset_ms / 1000)}]: ${item.data.text}\n\n`;
-    }
-  });
+  await exportSessionMarkdown(currentSessionId);
+};
+
+async function exportSessionMarkdown(sessionId) {
+  const session = await api('GET', `/sessions/${sessionId}`);
+  let md = `# ${session.title}\n\n`;
+
+  try {
+    const aligned = await api('GET', `/sessions/${sessionId}/aligned`);
+    aligned.items.forEach(item => {
+      if (item.type === 'segment') {
+        md += `[${fmtTimeShort(item.data.start_time)}] ${item.data.text}\n\n`;
+      } else {
+        md += `> **Note** [${fmtTimeShort(item.data.audio_offset_ms / 1000)}]: ${item.data.text}\n\n`;
+      }
+    });
+  } catch (e) {
+    // No transcript yet, just export notes
+    const notes = await api('GET', `/sessions/${sessionId}/notes`);
+    notes.forEach(note => {
+      md += `> **Note** [${fmtTimeShort(note.audio_offset_ms / 1000)}]: ${note.text}\n\n`;
+    });
+  }
+
   const blob = new Blob([md], { type: 'text/markdown' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${els.sessionTitle.value.replace(/\s+/g, '_')}.md`;
+  a.download = `${session.title.replace(/\s+/g, '_')}.md`;
   a.click();
   URL.revokeObjectURL(url);
-};
+  setStatus('Exported Markdown', 'success');
+}
 
 // ─── Init ───────────────────────────────────────────────────
 
