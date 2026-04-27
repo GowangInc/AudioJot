@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AudioJot</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div id="sidebar-header">
+        <h1>AudioJot</h1>
+        <button id="btn-new-session">+ New Session</button>
+      </div>
+      <div id="session-list"></div>
+      <div id="audio-panel">
+        <h3>Audio</h3>
+        <div id="timer">00:00:00</div>
+        <div id="audio-controls">
+          <button id="btn-record">Record</button>
+          <button id="btn-stop" disabled>Stop</button>
+          <button id="btn-play" disabled>Play</button>
+        </div>
+        <audio id="audio-player" controls hidden></audio>
+        <input type="file" id="audio-upload" accept="audio/*" hidden />
+        <button id="btn-upload" style="margin-top:8px;width:100%;">Upload Audio</button>
+        <button id="btn-transcribe" style="margin-top:8px;width:100%;" disabled>Transcribe</button>
+        <button id="btn-import" style="margin-top:8px;width:100%;" disabled>Import Transcript</button>
+        <div id="transcribe-status" style="margin-top:8px;font-size:12px;color:#8e8e93;text-align:center;"></div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <div id="main-header">
+        <input id="session-title" type="text" placeholder="Session title..." disabled />
+        <div class="actions">
+          <button id="btn-export-md" disabled>Export Markdown</button>
+        </div>
+      </div>
+      <div id="editor">
+        <div class="empty-state">
+          <h2>No session selected</h2>
+          <p>Create a new session or select one from the sidebar.</p>
+        </div>
+      </div>
+      <div id="note-input-area" hidden>
+        <input id="note-input" type="text" placeholder="Type a note and press Enter..." />
+        <button id="btn-add-note">Add Note</button>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
