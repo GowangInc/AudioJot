@@ -21,7 +21,7 @@ const els = {
   audioUpload: document.getElementById('audio-upload'),
   btnTranscribe: document.getElementById('btn-transcribe'),
   btnImport: document.getElementById('btn-import'),
-  transcribeStatus: document.getElementById('transcribe-status'),
+  statusMsg: document.getElementById('status-msg'),
   timer: document.getElementById('timer'),
   audioPlayer: document.getElementById('audio-player'),
   sessionTitle: document.getElementById('session-title'),
@@ -50,6 +50,11 @@ function fmtTimeShort(seconds) {
   return `${m}:${s}`;
 }
 
+function setStatus(msg, isError = false) {
+  els.statusMsg.textContent = msg;
+  els.statusMsg.style.color = isError ? '#c62828' : '#8e8e93';
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: {} };
   if (body && !(body instanceof FormData)) {
@@ -58,12 +63,17 @@ async function api(method, path, body) {
   } else if (body) {
     opts.body = body;
   }
-  const res = await fetch(`${API_BASE}${path}`, opts);
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, opts);
+    if (!res.ok) {
+      const errText = await res.text().catch(() => 'Unknown error');
+      throw new Error(`${res.status}: ${errText}`);
+    }
+    return res.status === 204 ? null : res.json();
+  } catch (e) {
+    setStatus(`Error: ${e.message || e}`, true);
+    throw e;
   }
-  return res.status === 204 ? null : res.json();
 }
 
 // ─── Session List ───────────────────────────────────────────
@@ -93,6 +103,7 @@ function escapeHtml(text) {
 
 async function selectSession(id) {
   currentSessionId = id;
+  setStatus('');
   await loadSessions();
 
   const session = await api('GET', `/sessions/${id}`);
@@ -114,8 +125,9 @@ async function selectSession(id) {
     els.audioPlayer.src = '';
   }
 
-  // Note input visible only when a session is selected
+  // Note input visible when a session is selected
   els.noteInputArea.hidden = false;
+  els.noteInput.placeholder = isRecording ? 'Type a note (timestamped to recording)...' : 'Type a note and press Enter...';
 
   // Load aligned view or notes
   await loadEditor();
@@ -245,10 +257,13 @@ async function finishRecording() {
 }
 
 els.btnRecord.onclick = async () => {
-  if (!currentSessionId) return;
+  if (!currentSessionId) {
+    setStatus('Select or create a session first', true);
+    return;
+  }
+  setStatus('Starting recording...');
 
   try {
-    // Try Python backend recorder first (desktop app)
     await api('POST', `/sessions/${currentSessionId}/audio/record-start`);
     isRecording = true;
     recordingStartTime = Date.now();
@@ -256,9 +271,10 @@ els.btnRecord.onclick = async () => {
     els.btnRecord.disabled = true;
     els.btnStop.disabled = false;
     els.btnPlay.disabled = true;
+    setStatus('Recording...');
     await loadSessions();
   } catch (err) {
-    // Backend recorder failed — try browser MediaRecorder as fallback
+    setStatus('Backend recorder failed, trying browser...', true);
     try {
       await startBrowserRecording();
       isRecording = true;
@@ -267,25 +283,27 @@ els.btnRecord.onclick = async () => {
       els.btnRecord.disabled = true;
       els.btnStop.disabled = false;
       els.btnPlay.disabled = true;
+      setStatus('Recording (browser mode)...');
     } catch (browserErr) {
-      alert('Could not start recording:\n' + browserErr.message);
+      setStatus('Could not start recording: ' + (browserErr.message || browserErr), true);
     }
   }
 };
 
 els.btnStop.onclick = async () => {
+  setStatus('Stopping...');
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    // Browser recording active
     mediaRecorder.stop();
     mediaRecorder.stream.getTracks().forEach(t => t.stop());
     mediaRecorder = null;
   } else {
-    // Python backend recording
     try {
       await api('POST', `/sessions/${currentSessionId}/audio/record-stop`);
       await finishRecording();
+      setStatus('Recording saved');
     } catch (err) {
-      alert('Failed to stop recording: ' + err.message);
+      setStatus('Failed to stop: ' + (err.message || err), true);
+      finishRecording();
     }
   }
 };
@@ -340,13 +358,16 @@ async function addNote() {
   if (!text || !currentSessionId) return;
 
   let offsetMs = 0;
+  let modeLabel = '';
   if (isRecording) {
     offsetMs = Date.now() - recordingStartTime;
+    modeLabel = 'live';
   } else if (!els.audioPlayer.paused && els.audioPlayer.currentTime > 0) {
     offsetMs = Math.floor(els.audioPlayer.currentTime * 1000);
+    modeLabel = 'playback';
   } else {
-    // Manual mode: default to 0 for now; user can edit later
     offsetMs = 0;
+    modeLabel = 'manual';
   }
 
   await api('POST', `/sessions/${currentSessionId}/notes`, {
@@ -354,6 +375,9 @@ async function addNote() {
     audio_offset_ms: offsetMs,
   });
   els.noteInput.value = '';
+  if (modeLabel) {
+    setStatus(`Note added (${modeLabel} at ${fmtTimeShort(offsetMs / 1000)})`);
+  }
   await loadEditor();
 }
 
@@ -369,9 +393,10 @@ els.noteInput.onkeydown = e => {
 
 els.btnTranscribe.onclick = async () => {
   if (!currentSessionId) return;
+  setStatus('Starting transcription...');
   await api('POST', `/sessions/${currentSessionId}/transcribe`);
   els.btnTranscribe.disabled = true;
-  els.transcribeStatus.textContent = 'Transcribing...';
+  setStatus('Transcribing...');
   pollTranscriptionStatus();
 };
 
@@ -379,19 +404,25 @@ function pollTranscriptionStatus() {
   if (!currentSessionId) return;
   const interval = setInterval(async () => {
     if (!currentSessionId) { clearInterval(interval); return; }
-    const status = await api('GET', `/sessions/${currentSessionId}/transcribe-status`);
-    if (status.status === 'done') {
+    try {
+      const status = await api('GET', `/sessions/${currentSessionId}/transcribe-status`);
+      if (status.status === 'done') {
+        clearInterval(interval);
+        setStatus('Transcription complete');
+        els.btnTranscribe.disabled = false;
+        await selectSession(currentSessionId);
+      } else if (status.status === 'error') {
+        clearInterval(interval);
+        setStatus('Transcription error: ' + (status.error || 'unknown'), true);
+        els.btnTranscribe.disabled = false;
+      } else if (status.status === 'transcribing') {
+        const pct = Math.round((status.progress || 0) * 100);
+        setStatus(`Transcribing... ${pct}%`);
+      }
+    } catch (e) {
       clearInterval(interval);
-      els.transcribeStatus.textContent = 'Transcription complete';
+      setStatus('Failed to check status', true);
       els.btnTranscribe.disabled = false;
-      await selectSession(currentSessionId);
-    } else if (status.status === 'error') {
-      clearInterval(interval);
-      els.transcribeStatus.textContent = 'Error: ' + (status.error || 'unknown');
-      els.btnTranscribe.disabled = false;
-    } else if (status.status === 'transcribing') {
-      const pct = Math.round((status.progress || 0) * 100);
-      els.transcribeStatus.textContent = `Transcribing... ${pct}%`;
     }
   }, 2000);
 }
@@ -439,3 +470,4 @@ els.btnExportMd.onclick = async () => {
 // ─── Init ───────────────────────────────────────────────────
 
 loadSessions();
+setStatus('Welcome to AudioJot. Create a session to begin.');
