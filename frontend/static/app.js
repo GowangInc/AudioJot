@@ -208,10 +208,10 @@ els.sessionTitle.onchange = async () => {
 };
 
 // ─── Recording ──────────────────────────────────────────────
+// Primary: Python backend recorder (works in pywebview desktop)
+// Fallback: Browser MediaRecorder (for development in real browsers)
 
-els.btnRecord.onclick = async () => {
-  if (!currentSessionId) return;
-
+async function startBrowserRecording() {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   mediaRecorder = new MediaRecorder(stream);
   recordedChunks = [];
@@ -225,31 +225,68 @@ els.btnRecord.onclick = async () => {
     const formData = new FormData();
     formData.append('file', audioBlob, 'audio.webm');
     await api('POST', `/sessions/${currentSessionId}/audio/upload`, formData);
-    await selectSession(currentSessionId);
-    stopTimer();
-    els.btnRecord.disabled = false;
-    els.btnStop.disabled = true;
-    isRecording = false;
+    await finishRecording();
+  };
+
+  mediaRecorder.onerror = () => {
+    alert('Recording error occurred');
+    finishRecording();
   };
 
   mediaRecorder.start();
-  isRecording = true;
-  recordingStartTime = Date.now();
-  startTimer();
+}
 
-  // Update session status visually
-  await api('PATCH', `/sessions/${currentSessionId}`, {});  // trigger updated_at
-  await loadSessions();
+async function finishRecording() {
+  stopTimer();
+  els.btnRecord.disabled = false;
+  els.btnStop.disabled = true;
+  isRecording = false;
+  await selectSession(currentSessionId);
+}
 
-  els.btnRecord.disabled = true;
-  els.btnStop.disabled = false;
-  els.btnPlay.disabled = true;
+els.btnRecord.onclick = async () => {
+  if (!currentSessionId) return;
+
+  try {
+    // Try Python backend recorder first (desktop app)
+    await api('POST', `/sessions/${currentSessionId}/audio/record-start`);
+    isRecording = true;
+    recordingStartTime = Date.now();
+    startTimer();
+    els.btnRecord.disabled = true;
+    els.btnStop.disabled = false;
+    els.btnPlay.disabled = true;
+    await loadSessions();
+  } catch (err) {
+    // Backend recorder failed — try browser MediaRecorder as fallback
+    try {
+      await startBrowserRecording();
+      isRecording = true;
+      recordingStartTime = Date.now();
+      startTimer();
+      els.btnRecord.disabled = true;
+      els.btnStop.disabled = false;
+      els.btnPlay.disabled = true;
+    } catch (browserErr) {
+      alert('Could not start recording:\n' + browserErr.message);
+    }
+  }
 };
 
-els.btnStop.onclick = () => {
+els.btnStop.onclick = async () => {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    // Browser recording active
     mediaRecorder.stop();
     mediaRecorder.stream.getTracks().forEach(t => t.stop());
+    mediaRecorder = null;
+  } else {
+    // Python backend recording
+    try {
+      await api('POST', `/sessions/${currentSessionId}/audio/record-stop`);
+      await finishRecording();
+    } catch (err) {
+      alert('Failed to stop recording: ' + err.message);
+    }
   }
 };
 

@@ -6,3 +6,5 @@ python-multipart>=0.0.6
 pywebview>=4.4
 faster-whisper>=1.0
 aiofiles>=23.2
+sounddevice>=0.5
+soundfile>=0.13
