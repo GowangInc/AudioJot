@@ -490,6 +490,7 @@ async function finishRecording() {
   els.btnStop.disabled = true;
   isRecording = false;
   els.editor.placeholder = 'Type your notes here...';
+  await loadSessions();        // refresh cached sessions array
   await selectSession(currentSessionId);
 }
 
@@ -533,6 +534,7 @@ els.audioUpload.onchange = async () => {
   const formData = new FormData();
   formData.append('file', file);
   await api('POST', `/sessions/${currentSessionId}/audio/upload`, formData);
+  await loadSessions();
   await selectSession(currentSessionId);
 };
 
@@ -544,20 +546,6 @@ els.btnTranscribe.onclick = async () => {
     return;
   }
 
-  // Double-check session has audio before calling
-  const session = sessions.find(s => s.id === currentSessionId);
-  if (!session) {
-    setStatus('Session not found. It may have been deleted.', 'error');
-    currentSessionId = null;
-    resetMain();
-    await loadSessions();
-    return;
-  }
-  if (!session.audio_file_path) {
-    setStatus('No audio recorded for this session', 'error');
-    return;
-  }
-
   setStatus('Starting transcription...');
   try {
     await api('POST', `/sessions/${currentSessionId}/transcribe`);
@@ -565,7 +553,10 @@ els.btnTranscribe.onclick = async () => {
     setStatus('Transcribing...');
     pollTranscriptionStatus();
   } catch (e) {
-    // Error already shown by api()
+    // If it was a 400/404, the session likely has no audio
+    if (e.message && e.message.includes('400')) {
+      setStatus('No audio recorded for this session', 'error');
+    }
     console.error('Transcribe failed:', e);
   }
 };
