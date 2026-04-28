@@ -72,11 +72,17 @@ async function api(method, path, body) {
     const res = await fetch(`${API_BASE}${path}`, opts);
     if (!res.ok) {
       const errText = await res.text().catch(() => 'Unknown error');
-      throw new Error(`${res.status}: ${errText}`);
+      // Try to parse FastAPI error JSON
+      let detail = errText;
+      try {
+        const errJson = JSON.parse(errText);
+        detail = errJson.detail || errText;
+      } catch (_) {}
+      throw new Error(`${res.status}: ${detail}`);
     }
     return res.status === 204 ? null : res.json();
   } catch (e) {
-    setStatus(`Error: ${e.message || e}`, 'error');
+    setStatus(`${e.message || e}`, 'error');
     throw e;
   }
 }
@@ -533,12 +539,35 @@ els.audioUpload.onchange = async () => {
 // ─── Transcription ──────────────────────────────────────────
 
 els.btnTranscribe.onclick = async () => {
-  if (!currentSessionId) return;
+  if (!currentSessionId) {
+    setStatus('Select a session first', 'error');
+    return;
+  }
+
+  // Double-check session has audio before calling
+  const session = sessions.find(s => s.id === currentSessionId);
+  if (!session) {
+    setStatus('Session not found. It may have been deleted.', 'error');
+    currentSessionId = null;
+    resetMain();
+    await loadSessions();
+    return;
+  }
+  if (!session.audio_file_path) {
+    setStatus('No audio recorded for this session', 'error');
+    return;
+  }
+
   setStatus('Starting transcription...');
-  await api('POST', `/sessions/${currentSessionId}/transcribe`);
-  els.btnTranscribe.disabled = true;
-  setStatus('Transcribing...');
-  pollTranscriptionStatus();
+  try {
+    await api('POST', `/sessions/${currentSessionId}/transcribe`);
+    els.btnTranscribe.disabled = true;
+    setStatus('Transcribing...');
+    pollTranscriptionStatus();
+  } catch (e) {
+    // Error already shown by api()
+    console.error('Transcribe failed:', e);
+  }
 };
 
 function pollTranscriptionStatus() {
